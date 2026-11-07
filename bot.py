@@ -10,9 +10,11 @@ Test without Telegram:
   bot.py --ask "яке в мене наступне тренування?"
   bot.py --analyze <activity_id>
 """
+import html
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -119,7 +121,66 @@ def tg(method, **params):
     return body["result"]
 
 
-def split_message(text, limit=4000):
+def _inline(text):
+    """Inline Markdown -> Telegram HTML. `text` is already HTML-escaped."""
+    text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+    text = re.sub(r"(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])", r"<i>\1</i>", text)
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+    return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', text)
+
+
+def _table(lines):
+    """Markdown table -> aligned monospace block (readable on a phone)."""
+    rows = []
+    for line in lines:
+        cells = [re.sub(r"\*\*|`", "", c).strip() for c in line.strip().strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-+:?", c) for c in cells if c):
+            continue  # the |---|---| separator row
+        rows.append(cells)
+    if not rows:
+        return ""
+    widths = [max(len(r[i]) if i < len(r) else 0 for r in rows) for i in range(max(map(len, rows)))]
+    text = "\n".join("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows)
+    return "<pre>" + html.escape(text, quote=False) + "</pre>"
+
+
+def to_telegram_html(markdown):
+    """Convert the Markdown that Claude writes into the HTML subset Telegram renders."""
+    lines, out, i = markdown.split("\n"), [], 0
+    esc = lambda s: html.escape(s, quote=False)  # noqa: E731
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith("```"):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith("```"):
+                j += 1
+            out.append("<pre>" + esc("\n".join(lines[i + 1:j])) + "</pre>")
+            i = j + 1
+            continue
+        if line.strip().startswith("|"):
+            j = i
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                j += 1
+            out.append(_table(lines[i:j]))
+            i = j
+            continue
+        heading = re.match(r"\s{0,3}#{1,6}\s+(.*)", line)
+        bullet = re.match(r"(\s*)[-*+]\s+(.*)", line)
+        if heading:
+            out.append("<b>" + _inline(esc(heading.group(1).replace("**", "").rstrip("# "))) + "</b>")
+        elif re.fullmatch(r"\s*([-*_])(\s*\1){2,}\s*", line):
+            out.append("")  # horizontal rule
+        elif bullet:
+            out.append(bullet.group(1) + "• " + _inline(esc(bullet.group(2))))
+        else:
+            out.append(_inline(esc(re.sub(r"^\s*>\s?", "", line))))
+        i += 1
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+def split_message(text, limit=3500):
     parts = []
     while len(text) > limit:
         cut = text.rfind("\n", 0, limit)
@@ -134,10 +195,17 @@ def split_message(text, limit=4000):
 def send(text, reply_to=None, chat_id=None):
     ids = []
     for i, chunk in enumerate(split_message(text)):
-        params = {"chat_id": chat_id or CHAT_ID, "text": chunk, "link_preview_options": {"is_disabled": True}}
+        params = {"chat_id": chat_id or CHAT_ID, "link_preview_options": {"is_disabled": True}}
         if reply_to and i == 0:
             params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
-        ids.append(tg("sendMessage", **params)["message_id"])
+        try:
+            message = tg("sendMessage", text=to_telegram_html(chunk), parse_mode="HTML", **params)
+        except RuntimeError as e:
+            if "HTTP 400" not in str(e):
+                raise
+            log.warning("Telegram rejected HTML, sending plain text: %s", e)
+            message = tg("sendMessage", text=chunk, **params)
+        ids.append(message["message_id"])
     return ids
 
 
