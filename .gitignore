@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+config.env
+state.json
+state.tmp
+.mcp-runtime.json
+claude-garmin-coach.service
+# Personal: the coach's notes about you (templates live in coach/notes-template/)
+coach/notes/

@@ -1,0 +1,21 @@
+[Unit]
+Description=Garmin coach (Telegram bot + workout analysis with Claude Code)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+EnvironmentFile=@DIR@/config.env
+Environment=PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@DIR@/.venv/bin/python @DIR@/bot.py
+Restart=always
+RestartSec=60
+# Low priority: the server's own processing always wins.
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

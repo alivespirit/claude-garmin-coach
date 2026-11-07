@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__garmin__*",
+      "Read(./**)",
+      "Edit(./notes/**)",
+      "Write(./notes/**)",
+      "Bash(../.venv/bin/python ../weather.py:*)"
+    ],
+    "deny": [
+      "mcp__garmin__delete_activity",
+      "mcp__garmin__delete_weigh_ins",
+      "mcp__garmin__delete_food_log",
+      "mcp__garmin__delete_custom_food",
+      "mcp__garmin__delete_course",
+      "mcp__garmin__get_activity_weather"
+    ]
+  }
+}
