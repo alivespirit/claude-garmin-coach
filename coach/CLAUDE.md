@@ -85,7 +85,7 @@ chat, and changes happen there.
 
 When the prompt starts with `[light-activity]` (e.g. a longer walk), keep it brief: 2–4 lines
 with distance, duration, average HR and what it means for recovery and this week's load. Skip
-weather, plan comparison and recovery data unless something stands out. Add one line to
+plan comparison and recovery data unless something stands out. Add one line to
 `notes/log.md`.
 
 ## Changing the plan (in chat)
