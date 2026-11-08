@@ -58,7 +58,10 @@ CLAUDE_MODEL = env("CLAUDE_MODEL")
 CLAUDE_TIMEOUT = int(env("CLAUDE_TIMEOUT_MINUTES", "10")) * 60
 TELEGRAM_POLL = int(env("TELEGRAM_POLL_SECONDS", "25"))
 GARMIN_POLL = int(env("GARMIN_POLL_MINUTES", "15")) * 60
-SKIP_TYPES = {t.strip() for t in env("SKIP_ACTIVITY_TYPES", "walking").split(",") if t.strip()}
+SKIP_TYPES = {t.strip() for t in env("SKIP_ACTIVITY_TYPES", "").split(",") if t.strip()}
+# Light activities (e.g. walks): skipped when shorter than LIGHT_ACTIVITY_MIN_KM, else analyzed briefly.
+LIGHT_TYPES = {t.strip() for t in env("LIGHT_ACTIVITY_TYPES", "walking").split(",") if t.strip()}
+LIGHT_MIN_KM = float(env("LIGHT_ACTIVITY_MIN_KM", "3"))
 
 HELP = (
     "Привіт! Я твій тренер 🏃\n\n"
@@ -72,6 +75,10 @@ HELP = (
 ANALYSIS_PROMPT = (
     "[auto-analysis] New activity synced from Garmin: id {id}, \"{name}\" ({type}), "
     "started {start}. Analyze it as described in CLAUDE.md."
+)
+LIGHT_PROMPT = (
+    "[light-activity] New light activity synced from Garmin: id {id}, \"{name}\" ({type}, {km:.1f} km), "
+    "started {start}. Give the brief summary described in CLAUDE.md."
 )
 
 log = logging.getLogger("coach")
@@ -232,9 +239,10 @@ def run_claude(prompt, session_id=None, show_typing=False):
         CLAUDE_BIN, "-p", prompt,
         "--output-format", "json",
         "--mcp-config", str(MCP_CONFIG), "--strict-mcp-config",
-        # Permissions come only from permissions.json: no user/project settings, so nothing
-        # else on the machine can widen what the unattended agent may do.
-        "--setting-sources", "", "--settings", str(ROOT / "permissions.json"),
+        # "project,local" loads coach/CLAUDE.md (with its @notes imports) and coach/CLAUDE.local.md.
+        # User settings are skipped, coach/ has no .claude/ settings, and the agent can only write
+        # to coach/notes/, so permissions come from permissions.json alone.
+        "--setting-sources", "project,local", "--settings", str(ROOT / "permissions.json"),
     ]
     if session_id:
         cmd += ["--resume", session_id]
@@ -285,10 +293,20 @@ def activity_type(activity):
     return (activity.get("activityType") or {}).get("typeKey", "")
 
 
+def activity_km(activity):
+    return (activity.get("distance") or 0) / 1000
+
+
+def should_skip(activity):
+    kind = activity_type(activity)
+    return kind in SKIP_TYPES or (kind in LIGHT_TYPES and activity_km(activity) < LIGHT_MIN_KM)
+
+
 def analyze(state, activity):
-    prompt = ANALYSIS_PROMPT.format(
-        id=activity["activityId"], name=activity.get("activityName", ""),
-        type=activity_type(activity), start=activity.get("startTimeLocal", ""),
+    template = LIGHT_PROMPT if activity_type(activity) in LIGHT_TYPES else ANALYSIS_PROMPT
+    prompt = template.format(
+        id=activity["activityId"], name=activity.get("activityName", ""), type=activity_type(activity),
+        km=activity_km(activity), start=activity.get("startTimeLocal", ""),
     )
     text, session_id = run_claude(prompt, show_typing=True)
     state["session"] = session_id  # a plain message after the analysis continues this conversation
@@ -308,8 +326,8 @@ def check_garmin(state):
         log.info("first Garmin check: marked %d existing activities as seen", len(new))
         return
     for activity in new:
-        if activity_type(activity) in SKIP_TYPES:
-            log.info("skipping %s %s", activity_type(activity), activity["activityId"])
+        if should_skip(activity):
+            log.info("skipping %s %.1f km %s", activity_type(activity), activity_km(activity), activity["activityId"])
             continue
         log.info("new activity %s, analyzing", activity["activityId"])
         analyze(state, activity)
@@ -342,7 +360,9 @@ def handle_message(state, msg):
     elif command == "/status":
         send(
             f"Остання перевірка Garmin: {state.get('last_garmin_check') or 'ще не було'}\n"
-            f"Перевірка кожні {GARMIN_POLL // 60} хв, пропускаю: {', '.join(sorted(SKIP_TYPES)) or '—'}\n"
+            f"Перевірка кожні {GARMIN_POLL // 60} хв\n"
+            f"Пропускаю: {', '.join(sorted(SKIP_TYPES) + [f'{t} < {LIGHT_MIN_KM:g} км' for t in sorted(LIGHT_TYPES)]) or '—'}\n"
+            f"Коротко розбираю: {', '.join(f'{t} ≥ {LIGHT_MIN_KM:g} км' for t in sorted(LIGHT_TYPES)) or '—'}\n"
             f"Поточна розмова: {state.get('session') or 'нова'}"
         )
     elif command == "/analyze":
@@ -352,9 +372,10 @@ def handle_message(state, msg):
             activity = {
                 "activityId": activity["activityId"], "activityName": activity.get("activityName"),
                 "activityType": activity.get("activityTypeDTO"), "startTimeLocal": summary.get("startTimeLocal"),
+                "distance": summary.get("distance"),
             }
         else:
-            recent = [a for a in garmin().get_activities(0, 10) if activity_type(a) not in SKIP_TYPES]
+            recent = [a for a in garmin().get_activities(0, 10) if not should_skip(a)]
             if not recent:
                 send("Не знайшов недавніх тренувань.")
                 return

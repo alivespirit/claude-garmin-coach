@@ -21,9 +21,12 @@ bot.py (systemd service, idle most of the time)
 - **Conversations:** a new analysis starts a new conversation. Plain messages continue the
   latest one. *Replying* to an older bot message continues that message's conversation.
   `/new` starts fresh.
-- **Coach context:** [coach/CLAUDE.md](coach/CLAUDE.md) holds the role, language (Ukrainian,
-  informal) and procedure. [coach/notes/](coach/notes/) holds what the coach knows about you
-  (`athlete.md`, `plan.md`) and a running `log.md`, which the agent maintains itself.
+- **Coach context** (see [Personalizing](#personalizing)): [coach/CLAUDE.md](coach/CLAUDE.md)
+  holds the generic role, style and analysis procedure. Your own additions go in
+  `coach/CLAUDE.local.md`, and `coach/notes/` holds what the coach knows about you.
+- **Which activities get analyzed:** everything except light activities (walks by default)
+  shorter than 3 km. Longer light activities get a brief 2–4 line summary. Configure this with
+  `LIGHT_ACTIVITY_TYPES`, `LIGHT_ACTIVITY_MIN_KM` and `SKIP_ACTIVITY_TYPES` in `config.env`.
 - **Weather:** Garmin has none for your activities, so [weather.py](weather.py) gets hourly
   Open-Meteo data for the activity's GPS start point (rounded to ~1 km). Free, no API key.
   Activities without GPS use `HOME_LATITUDE`/`HOME_LONGITUDE` from `config.env`.
@@ -31,6 +34,9 @@ bot.py (systemd service, idle most of the time)
   activities, weigh-ins, food logs, custom foods and courses. Planned workouts can be created,
   changed and deleted. File edits are allowed only in `coach/notes/`, and the only shell
   command it may run is the weather script. No other settings on the machine apply.
+- **Sandbox:** the systemd service makes the whole filesystem read-only for the bot, Claude Code
+  and the Garmin MCP server. They can write only to this folder, Claude Code's state
+  (`~/.claude`, `~/.claude.json`) and the Garmin tokens (`~/.garminconnect`). `/tmp` is private.
 - **Calendar changes** happen only in chat. Automatic analyses only *propose* changes.
 
 ## Cost on the server
@@ -56,6 +62,7 @@ bot.py (systemd service, idle most of the time)
    rsync -a ~/.garminconnect/ SERVER:~/.garminconnect/                  # Garmin tokens
    rsync -a ~/claude-garmin-coach/config.env SERVER:~/claude-garmin-coach/
    rsync -a ~/claude-garmin-coach/coach/notes/ SERVER:~/claude-garmin-coach/coach/notes/
+   rsync -a ~/claude-garmin-coach/coach/CLAUDE.local.md SERVER:~/claude-garmin-coach/coach/
    ```
    With no tokens to copy, run `.venv/bin/garmin-mcp-auth` on the server instead.
 3. On the server, remove any `CLAUDE_BIN=` line from `config.env` that points at a laptop path
@@ -66,12 +73,13 @@ bot.py (systemd service, idle most of the time)
 5. Fill in `TELEGRAM_BOT_TOKEN` (and `TELEGRAM_CHAT_ID`, see below) in `config.env`.
 6. Test without Telegram:
    ```bash
-   .venv/bin/python bot.py --ask "яке в мене наступне тренування?"
+   .venv/bin/python bot.py --ask "what's my next planned workout?"
    .venv/bin/python bot.py --analyze <activity_id>
    ```
 7. Start it:
    ```bash
    sudo cp claude-garmin-coach.service /etc/systemd/system/
+   sudo systemctl daemon-reload
    sudo systemctl enable --now claude-garmin-coach
    journalctl -u claude-garmin-coach -f
    ```
@@ -89,13 +97,30 @@ copies would also analyze every workout twice.
 - `/new`: start a new conversation
 - `/status`: last Garmin check, settings, current conversation
 
-## Importing the old session's context
+## Personalizing
 
-Put the condensed files from the old training session into `coach/notes/`
-(`athlete.md`, `plan.md`, `log.md`), replacing the placeholders, then restart the service.
-`coach/notes/` is gitignored: it holds personal data and the coach maintains it itself.
-Keep `log.md` reasonably short, because it is loaded on every run. The coach condenses it
-itself once it grows past ~150 lines.
+Everything personal is gitignored, so `git pull` never touches it:
+
+- **`coach/notes/`**: what the coach knows about you. `install.sh` creates it from
+  [coach/notes-template/](coach/notes-template/), which shows what's worth writing down:
+  - `athlete.md`: profile, fitness, zones, goals, limitations, schedule, feedback preferences;
+  - `plan.md`: the plan and *why* it looks this way, agreed adjustment rules, open questions;
+  - `log.md`: analyzed workouts.
+
+  Fill the files in yourself, or have Claude write them from an earlier conversation about your
+  training. The coach keeps them up to date afterwards. `log.md` is loaded on every run, so the
+  coach condenses it once it grows past ~150 lines.
+- **`coach/CLAUDE.local.md`** (optional): your own instructions, loaded on top of the generic
+  [coach/CLAUDE.md](coach/CLAUDE.md) and taking precedence over it. Use it for the language and
+  tone you want, data quirks (sensor changes, GPS problems where you run), or Garmin settings
+  the coach should respect. For example:
+  ```markdown
+  # Personal instructions
+  - Always write in German, informally.
+  - HR: chest strap since 2026-03-01; earlier data is from the wrist.
+  ```
+
+No restart needed: every Claude run reads these files fresh.
 
 ## Maintenance
 

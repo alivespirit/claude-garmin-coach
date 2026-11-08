@@ -7,3 +7,5 @@ state.tmp
 claude-garmin-coach.service
 # Personal: the coach's notes about you (templates live in coach/notes-template/)
 coach/notes/
+# Personal coach instructions, loaded on top of coach/CLAUDE.md
+coach/CLAUDE.local.md

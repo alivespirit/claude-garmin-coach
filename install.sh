@@ -32,6 +32,11 @@ echo "==> config.env"
 [ -f config.env ] || cp config.env.example config.env
 chmod 600 config.env
 
+echo "==> writable paths for the sandboxed service"
+# The unit makes everything read-only except these; they must exist before it starts.
+mkdir -p "$HOME/.claude" "$HOME/.garminconnect"
+[ -f "$HOME/.claude.json" ] || echo '{}' > "$HOME/.claude.json"
+
 echo "==> systemd unit (claude-garmin-coach.service)"
 sed -e "s|@USER@|$(id -un)|g" -e "s|@DIR@|$DIR|g" -e "s|@HOME@|$HOME|g" \
     claude-garmin-coach.service.in > claude-garmin-coach.service
@@ -44,7 +49,9 @@ Done. Next steps (details in README.md):
   2. Claude login:   ~/.local/bin/claude setup-token   -> put the token in config.env
   3. Telegram:       put TELEGRAM_BOT_TOKEN in config.env
   4. Test:           .venv/bin/python bot.py --ask "яке в мене наступне тренування?"
-  5. Start service:  sudo cp claude-garmin-coach.service /etc/systemd/system/
+  5. Personalize:    coach/notes/*.md and, optionally, coach/CLAUDE.local.md
+  6. Start service:  sudo cp claude-garmin-coach.service /etc/systemd/system/
+                     sudo systemctl daemon-reload
                      sudo systemctl enable --now claude-garmin-coach
                      journalctl -u claude-garmin-coach -f
 EOF

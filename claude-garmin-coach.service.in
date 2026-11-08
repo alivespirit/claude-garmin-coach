@@ -17,5 +17,14 @@ Nice=10
 CPUWeight=20
 IOSchedulingClass=idle
 
+# Sandbox: the bot, Claude Code and the Garmin MCP server see the whole system read-only and
+# can write only to this folder, Claude Code's own state and the Garmin tokens (refreshed in
+# place). Using a custom GARMINTOKENS path? Add it here.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DIR@ @HOME@/.claude @HOME@/.claude.json @HOME@/.garminconnect
+
 [Install]
 WantedBy=multi-user.target
