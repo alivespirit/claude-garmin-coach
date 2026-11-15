@@ -313,9 +313,8 @@ def utc_timestamp(text):
 def synced_at(client, activity):
     """When the activity reached Garmin Connect (unix time), never later than now.
 
-    The upload time is only in the activity details (metadataDTO), named uploadedDate or uploadDate.
-    It can't be earlier than the activity's end. Unknown (or in the future) -> now, the first time
-    the bot saw it.
+    The upload time is only in the activity details: metadataDTO.uploadedDate, UTC. It can't be
+    earlier than the activity's end. Unknown (or in the future) -> now, the first time the bot saw it.
     """
     now = time.time()
     try:
@@ -323,14 +322,11 @@ def synced_at(client, activity):
     except Exception as e:
         log.warning("no details for activity %s: %s", activity["activityId"], e)
         meta = {}
-    uploaded = utc_timestamp(meta.get("uploadedDate") or meta.get("uploadDate"))
+    uploaded = utc_timestamp(meta.get("uploadedDate"))
     if uploaded is None:
         log.info("activity %s: upload time unknown, counting from now", activity["activityId"])
         return now
-    start = utc_timestamp(activity.get("startTimeGMT"))
-    if start is not None:
-        uploaded = max(uploaded, start + (activity.get("elapsedDuration") or activity.get("duration") or 0))
-    return min(uploaded, now)
+    return min(max(uploaded, utc_timestamp(activity.get("endTimeGMT")) or 0), now)
 
 
 def should_skip(activity):
