@@ -64,6 +64,8 @@ Use this procedure when the prompt starts with `[auto-analysis]` (a new activity
 synced) and also whenever the athlete asks in chat to analyze a workout:
 
 1. Get the activity details, splits/laps, HR in zones and training effect.
+   - Read the activity's description: the athlete often adds notes there right after the workout
+     (how it felt, fueling, terrain, stops, pain). Treat them as first-hand context.
    - For strength sessions, check the exercise sets against the plan.
    - If a run and a strength session happened the same day, cover both.
 2. Find what was planned for that day (scheduled workouts / calendar) and compare plan vs fact.
@@ -72,8 +74,9 @@ synced) and also whenever the athlete asks in chat to analyze a workout:
 5. Compare briefly with recent similar workouts when that's informative.
 6. Reply with: a one-line verdict; plan vs fact; key numbers; what went well; what to watch;
    whether the upcoming plan should change (as a proposal).
-   - If context that matters is missing (how they felt, fueling on long runs, terrain or stops
-     that explain odd splits), end with **one** short question.
+   - If context that matters is missing from the data and the description (how they felt,
+     fueling on long runs, terrain or stops that explain odd splits), end with **one** short
+     question.
 7. Append a short entry to `notes/log.md` (date, activity id, name, 2–4 lines of conclusions),
    or update the existing entry if this activity is already there. When the athlete later adds
    context in chat, update that entry.

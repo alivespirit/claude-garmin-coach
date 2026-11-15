@@ -3,7 +3,8 @@
 
 One process, one loop:
   * Telegram long polling: one request waits up to TELEGRAM_POLL_SECONDS, idle in between.
-  * Every GARMIN_POLL_MINUTES: check Garmin for new activities and analyze them.
+  * Every GARMIN_POLL_MINUTES: check Garmin for new activities and analyze them
+    ANALYSIS_DELAY_MINUTES after they synced to Garmin (time to add notes there).
   * Claude runs one at a time, so messages simply queue while it is busy.
 
 Test without Telegram:
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -58,6 +60,8 @@ CLAUDE_MODEL = env("CLAUDE_MODEL")
 CLAUDE_TIMEOUT = int(env("CLAUDE_TIMEOUT_MINUTES", "10")) * 60
 TELEGRAM_POLL = int(env("TELEGRAM_POLL_SECONDS", "25"))
 GARMIN_POLL = int(env("GARMIN_POLL_MINUTES", "15")) * 60
+# Analyze a new activity this long after it synced to Garmin, so notes can be added there first.
+ANALYSIS_DELAY = int(env("ANALYSIS_DELAY_MINUTES", "10")) * 60
 SKIP_TYPES = {t.strip() for t in env("SKIP_ACTIVITY_TYPES", "").split(",") if t.strip()}
 # Light activities (e.g. walks): skipped when shorter than LIGHT_ACTIVITY_MIN_KM, else analyzed briefly.
 LIGHT_TYPES = {t.strip() for t in env("LIGHT_ACTIVITY_TYPES", "walking").split(",") if t.strip()}
@@ -90,7 +94,7 @@ def load_state():
     try:
         return json.loads(STATE_FILE.read_text())
     except (FileNotFoundError, ValueError):
-        return {"offset": 0, "seen": [], "session": None, "msg_sessions": {}, "last_garmin_check": None}
+        return {"offset": 0, "seen": [], "pending": {}, "session": None, "msg_sessions": {}, "last_garmin_check": None}
 
 
 def save_state(state):
@@ -297,6 +301,38 @@ def activity_km(activity):
     return (activity.get("distance") or 0) / 1000
 
 
+def utc_timestamp(text):
+    """Garmin GMT time ("2026-11-15 08:30:00" or "2026-11-15T08:30:00.0") -> unix time, or None."""
+    try:
+        moment = datetime.fromisoformat(str(text).strip().rstrip("Z").replace(" ", "T"))
+    except ValueError:
+        return None
+    return moment.replace(tzinfo=timezone.utc).timestamp() if moment.tzinfo is None else moment.timestamp()
+
+
+def synced_at(client, activity):
+    """When the activity reached Garmin Connect (unix time), never later than now.
+
+    The upload time is only in the activity details (metadataDTO), named uploadedDate or uploadDate.
+    It can't be earlier than the activity's end. Unknown (or in the future) -> now, the first time
+    the bot saw it.
+    """
+    now = time.time()
+    try:
+        meta = client.get_activity(activity["activityId"]).get("metadataDTO") or {}
+    except Exception as e:
+        log.warning("no details for activity %s: %s", activity["activityId"], e)
+        meta = {}
+    uploaded = utc_timestamp(meta.get("uploadedDate") or meta.get("uploadDate"))
+    if uploaded is None:
+        log.info("activity %s: upload time unknown, counting from now", activity["activityId"])
+        return now
+    start = utc_timestamp(activity.get("startTimeGMT"))
+    if start is not None:
+        uploaded = max(uploaded, start + (activity.get("elapsedDuration") or activity.get("duration") or 0))
+    return min(uploaded, now)
+
+
 def should_skip(activity):
     kind = activity_type(activity)
     return kind in SKIP_TYPES or (kind in LIGHT_TYPES and activity_km(activity) < LIGHT_MIN_KM)
@@ -315,22 +351,44 @@ def analyze(state, activity):
 
 
 def check_garmin(state):
-    activities = garmin().get_activities(0, 10)
+    """Queue new activities, analyze the ones whose delay has passed.
+
+    Returns seconds until the next queued activity is due, or None if nothing is queued.
+    """
+    client = garmin()
+    activities = list(reversed(client.get_activities(0, 10)))  # oldest first
     state["last_garmin_check"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    pending = state.setdefault("pending", {})  # activity id -> unix time when analysis is due
     seen = set(state["seen"])
-    new = [a for a in reversed(activities) if a["activityId"] not in seen]  # oldest first
+    new = [a for a in activities if a["activityId"] not in seen]
     first_run = not state["seen"]
     state["seen"] = (state["seen"] + [a["activityId"] for a in new])[-300:]
-    save_state(state)
     if first_run:
+        save_state(state)
         log.info("first Garmin check: marked %d existing activities as seen", len(new))
-        return
+        return None
     for activity in new:
         if should_skip(activity):
             log.info("skipping %s %.1f km %s", activity_type(activity), activity_km(activity), activity["activityId"])
             continue
-        log.info("new activity %s, analyzing", activity["activityId"])
-        analyze(state, activity)
+        due = synced_at(client, activity) + ANALYSIS_DELAY
+        log.info("new activity %s, analyzing in %.0f min", activity["activityId"], max(0, due - time.time()) / 60)
+        pending[str(activity["activityId"])] = due
+    # Gone from the recent list (deleted in Garmin): nothing to analyze.
+    listed = {str(a["activityId"]) for a in activities}
+    for key in [k for k in pending if k not in listed]:
+        log.info("pending activity %s no longer listed, dropping", key)
+        del pending[key]
+    save_state(state)
+
+    for activity in activities:  # fetched just now, so the name reflects any edits made meanwhile
+        key = str(activity["activityId"])
+        if key in pending and pending[key] <= time.time():
+            del pending[key]
+            save_state(state)  # dropped before analyzing: a failing activity is not retried forever
+            log.info("analyzing activity %s", key)
+            analyze(state, activity)
+    return max(0.0, min(pending.values()) - time.time()) if pending else None
 
 
 # ---------- message handling ----------
@@ -360,7 +418,8 @@ def handle_message(state, msg):
     elif command == "/status":
         send(
             f"Остання перевірка Garmin: {state.get('last_garmin_check') or 'ще не було'}\n"
-            f"Перевірка кожні {GARMIN_POLL // 60} хв\n"
+            f"Перевірка кожні {GARMIN_POLL // 60} хв, розбір через {ANALYSIS_DELAY // 60} хв після синхронізації\n"
+            f"Чекають розбору: {len(state.get('pending') or {})}\n"
             f"Пропускаю: {', '.join(sorted(SKIP_TYPES) + [f'{t} < {LIGHT_MIN_KM:g} км' for t in sorted(LIGHT_TYPES)]) or '—'}\n"
             f"Коротко розбираю: {', '.join(f'{t} ≥ {LIGHT_MIN_KM:g} км' for t in sorted(LIGHT_TYPES)) or '—'}\n"
             f"Поточна розмова: {state.get('session') or 'нова'}"
@@ -409,7 +468,8 @@ def main():
 
     state = load_state()
     next_garmin_check = 0.0
-    log.info("started: Telegram poll %ss, Garmin poll %s min", TELEGRAM_POLL, GARMIN_POLL // 60)
+    log.info("started: Telegram poll %ss, Garmin poll %s min, analysis delay %s min",
+             TELEGRAM_POLL, GARMIN_POLL // 60, ANALYSIS_DELAY // 60)
     while True:
         loop_start = time.monotonic()
         try:
@@ -434,9 +494,12 @@ def main():
         if CHAT_ID and time.monotonic() >= next_garmin_check:
             next_garmin_check = time.monotonic() + GARMIN_POLL
             try:
-                check_garmin(state)
+                due_in = check_garmin(state)
             except Exception as e:
                 log.warning("Garmin check failed: %s", e)
+            else:
+                if due_in is not None:  # check again as soon as a queued activity is due
+                    next_garmin_check = min(next_garmin_check, time.monotonic() + due_in)
 
         # Long polling normally blocks for TELEGRAM_POLL seconds. If it returned quickly with
         # nothing (network down, errors), wait instead of spinning.

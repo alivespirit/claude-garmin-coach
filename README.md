@@ -14,7 +14,8 @@ to do.
 bot.py (systemd service, idle most of the time)
  ├─ Telegram long polling: one request waits up to 25 s; replies come instantly
  ├─ every 15 min: Garmin "any new activity?" (1 request)
- │    └─ new → claude -p "[auto-analysis] ..." in coach/ → analysis to Telegram
+ │    └─ new → wait until 10 min after it synced (time to add notes in Garmin)
+ │         → claude -p "[auto-analysis] ..." in coach/ → analysis to Telegram
  └─ your message → claude -p (continues the conversation) → answer to Telegram
 ```
 
@@ -27,6 +28,10 @@ bot.py (systemd service, idle most of the time)
 - **Which activities get analyzed:** everything except light activities (walks by default)
   shorter than 3 km. Longer light activities get a brief 2–4 line summary. Configure this with
   `LIGHT_ACTIVITY_TYPES`, `LIGHT_ACTIVITY_MIN_KM` and `SKIP_ACTIVITY_TYPES` in `config.env`.
+- **When:** an activity is analyzed `ANALYSIS_DELAY_MINUTES` (default 10) after it synced to
+  Garmin, so you have time to add notes to it in Garmin Connect; the coach reads them. If the
+  bot notices it later than that, it analyzes right away. Set it to 0 to never wait. `/analyze`
+  skips the wait.
 - **Weather:** Garmin has none for your activities, so [weather.py](weather.py) gets hourly
   Open-Meteo data for the activity's GPS start point (rounded to ~1 km). Free, no API key.
   Activities without GPS use `HOME_LATITUDE`/`HOME_LONGITUDE` from `config.env`.
