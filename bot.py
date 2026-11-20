@@ -59,6 +59,8 @@ CLAUDE_BIN = env("CLAUDE_BIN") or shutil.which("claude") or str(Path.home() / ".
 CLAUDE_MODEL = env("CLAUDE_MODEL")
 CLAUDE_TIMEOUT = int(env("CLAUDE_TIMEOUT_MINUTES", "10")) * 60
 TELEGRAM_POLL = int(env("TELEGRAM_POLL_SECONDS", "25"))
+# While Telegram is unreachable (e.g. no internet), retry after TELEGRAM_POLL, doubling up to this.
+TELEGRAM_MAX_BACKOFF = 300
 GARMIN_POLL = int(env("GARMIN_POLL_MINUTES", "15")) * 60
 # Analyze a new activity this long after it synced to Garmin, so notes can be added there first.
 ANALYSIS_DELAY = int(env("ANALYSIS_DELAY_MINUTES", "10")) * 60
@@ -464,6 +466,7 @@ def main():
 
     state = load_state()
     next_garmin_check = 0.0
+    failures = 0  # consecutive failed getUpdates calls
     log.info("started: Telegram poll %ss, Garmin poll %s min, analysis delay %s min",
              TELEGRAM_POLL, GARMIN_POLL // 60, ANALYSIS_DELAY // 60)
     while True:
@@ -471,8 +474,14 @@ def main():
         try:
             updates = tg("getUpdates", offset=state["offset"], timeout=TELEGRAM_POLL, allowed_updates=["message"])
         except Exception as e:
-            log.warning("getUpdates failed: %s", e)
+            failures += 1
+            retry_in = min(TELEGRAM_POLL * 2 ** min(failures - 1, 10), TELEGRAM_MAX_BACKOFF)
+            log.warning("getUpdates failed (%d in a row, retry in %ss): %s", failures, retry_in, e)
             updates = []
+        else:
+            if failures:
+                log.info("Telegram reachable again after %d failed attempts", failures)
+            failures = 0
         for update in updates:
             state["offset"] = update["update_id"] + 1
             save_state(state)  # saved before handling: a crashing message is not retried forever
@@ -497,9 +506,12 @@ def main():
                 if due_in is not None:  # check again as soon as a queued activity is due
                     next_garmin_check = min(next_garmin_check, time.monotonic() + due_in)
 
-        # Long polling normally blocks for TELEGRAM_POLL seconds. If it returned quickly with
-        # nothing (network down, errors), wait instead of spinning.
-        if not updates and time.monotonic() - loop_start < 5:
+        # Offline: back off, however long the failed attempt took (a DNS timeout alone takes ~10 s).
+        # Online, long polling blocks for TELEGRAM_POLL seconds; if it returned quickly with
+        # nothing, wait instead of spinning.
+        if failures:
+            time.sleep(retry_in)
+        elif not updates and time.monotonic() - loop_start < 5:
             time.sleep(TELEGRAM_POLL)
 
 
